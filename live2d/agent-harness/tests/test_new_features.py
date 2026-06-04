@@ -127,6 +127,33 @@ class TestBackup:
         f.write_text("{}")
         assert list_backups(f) == []
 
+    def test_backup_clean_json_mode_deletes_files(self, model_path):
+        """Regression: backup-clean --json must actually delete old backups, not just report."""
+        import time
+        from cli_anything.live2d.live2d_cli import cli
+        from click.testing import CliRunner
+        from cli_anything.live2d.core.backup import _backup_dir_for
+
+        # Create multiple backups by writing distinct snapshots with delays
+        bdir = _backup_dir_for(model_path)
+        for i in range(5):
+            info = load_model(model_path)
+            info.moc3 = f"version_{i}.moc3"
+            save_model(info)
+            snapshot(model_path)
+            time.sleep(1.1)  # bypass 1s dedup window
+
+        backups_before = list_backups(model_path)
+        assert len(backups_before) >= 5, f"Expected at least 5 backups, got {len(backups_before)}"
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--json", "backup-clean", str(model_path), "--keep", "2"])
+        assert result.exit_code == 0, result.output
+
+        # Verify backups were actually deleted
+        backups_after = list_backups(model_path)
+        assert len(backups_after) <= 2, f"Expected at most 2 backups, found {len(backups_after)}"
+
 
 # ── Edit + Save Tests ──────────────────────────────────────────
 
@@ -533,6 +560,43 @@ class TestFlatten:
             if src.exists():
                 shutil.copy2(src, out / Path(tex).name)
         assert (out / model_path.name).exists()
+
+    def test_flatten_copies_sound_assets(self, tmp_path):
+        """Regression: flatten must copy motion Sound files, not just the motion JSON."""
+        import shutil
+        from cli_anything.live2d.live2d_cli import flatten as flatten_cmd
+        from click.testing import CliRunner
+
+        # Create model with Sound refs in motions
+        d = tmp_path / "sound_model"
+        d.mkdir()
+        (d / "sounds").mkdir()
+        (d / "sounds" / "effect.wav").write_bytes(b"RIFF" + b"\x00" * 100)
+        (d / "motions").mkdir()
+        motion_data = {"Version": 2, "Meta": {"Duration": 1.0, "Fps": 30, "Loop": True, "AreBeziersRestricted": True, "CurveCount": 0, "TotalSegmentCount": 0, "TotalPointCount": 0, "UserDataCount": 0, "TotalUserDataSize": 0}, "Curves": []}
+        (d / "motions" / "idle.motion3.json").write_text(json.dumps(motion_data))
+        (d / "textures").mkdir()
+        (d / "textures" / "tex.png").write_bytes(b"\x89PNG" + b"\x00" * 100)
+        (d / "model.moc3").write_bytes(b"MOC3" + b"\x00" * 2000)
+
+        model_json = {
+            "Version": 3,
+            "FileReferences": {
+                "Moc": "model.moc3",
+                "Textures": ["textures/tex.png"],
+                "Motions": {
+                    "Idle": [{"File": "motions/idle.motion3.json", "FadeInTime": 0.5, "FadeOutTime": 0.5, "Sound": "sounds/effect.wav"}]
+                }
+            }
+        }
+        (d / "model.model3.json").write_text(json.dumps(model_json))
+
+        out = tmp_path / "flat_sound"
+        runner = CliRunner()
+        result = runner.invoke(flatten_cmd, [str(d / "model.model3.json"), "--out-dir", str(out)])
+        assert result.exit_code == 0, result.output
+        assert (out / "effect.wav").exists(), "Sound asset was not copied during flatten"
+        assert (out / "idle.motion3.json").exists()
 
 
 # ── Runtime-Check Tests ───────────────────────────────────────

@@ -1519,7 +1519,10 @@ def backup_clean(model_path: str, keep: int, dry_run: bool):
     to_delete = backups[keep:]
 
     if _json_output:
-        output({"total": len(backups), "keep": keep, "delete": len(to_delete), "files": [f.name for f in to_delete]})
+        if not dry_run:
+            for f in to_delete:
+                f.unlink()
+        output({"total": len(backups), "keep": keep, "deleted": len(to_delete) if not dry_run else 0, "would_delete": len(to_delete), "files": [f.name for f in to_delete], "dry_run": dry_run})
         return
 
     click.echo(f"\n  🧹 Backup Cleanup\n")
@@ -1867,6 +1870,10 @@ def flatten(model_path: str, out_dir: str, dry_run: bool):
     for motions in info.motions.values():
         for m in motions:
             files.append((model_dir / m.file, Path(m.file).name))
+            # Also collect Sound assets referenced by motions
+            sound = m.extra.get("Sound")
+            if sound:
+                files.append((model_dir / sound, Path(sound).name))
     for e in info.expressions:
         files.append((model_dir / e.file, Path(e.file).name))
     for ref in (info.physics, info.pose, info.userdata, info.display_info):
